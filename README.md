@@ -259,14 +259,6 @@ MAX_QUESTIONS_PER_ROUND = 12  # 每轮最多问题数
 INITIAL_BUDGET = 500          # 初始预算
 SUSPICION_THRESHOLD = 0.8     # 怀疑阈值
 
-# 疾病库（20种）
-DISEASE_LIBRARY = [
-    "偏头痛", "胃炎", "过敏性鼻炎", "普通感冒", "高血压", 
-    "糖尿病", "哮喘", "关节炎", "皮肤病", "失眠症",
-    "肺炎", "支气管炎", "胃溃疡", "肾结石", "胆囊炎",
-    "心肌炎", "脑震荡", "腰椎间盘突出", "骨质疏松", "贫血"
-]
-
 # 长期记忆
 ENABLE_LONG_TERM_MEMORY = True  # 启用跨游戏学习
 MAX_HISTORY_GAMES = 10          # 保存最近10场游戏
