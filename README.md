@@ -108,7 +108,6 @@ python doc3.py --rounds 10  # 运行10个回合
 
 ## 🔄 系统工作流程
 ```mermaid
-graph TD
     graph TD
     A[游戏启动] --> B[初始化配置]
     B --> C{配置验证}
