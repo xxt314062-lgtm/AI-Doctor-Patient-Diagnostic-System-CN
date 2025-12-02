@@ -2,6 +2,9 @@
 
 一个基于DeepSeek API构建的AI医患诊断系统，通过多智能体协作模拟真实的医疗诊断场景，具有完整的记录系统和长期学习机制。
 
+## 灵感与项目介绍
+灵感来自于平日自己的就医经历，发现大多数情况病人都很难准确描述自己的病情，但若让医生难以判断，不得不重复询问病情或者让病人做很多检查时，就医的时间与支出将会大大增加。因此，基于此灵感，我做了一个AI医患诊断系统，在限制询问病情数和病人预算的约束条件下，让AI智能体医生不断的从问诊中学习到经验，能够高效率地诊断人们的病情。
+
 ## ✨ Features
 **双智能体系统**: 医生AI与患者AI的交互诊断
 
@@ -19,17 +22,17 @@
 ```
 main-dir/
 ├── readme.md
-├── AI_doctor-patient_diagnostic_system-CN/
-    ├──doctor_memory/       #医生长期记忆目录
-    ├──medical_records/     #游戏记录目录
-    ├──round_logs/          #回合日志目录
+├── AI_doctor-patient_diagnostic_system-CN/  #中文版
+    ├──doctor_memory/       #医生长期记忆目录（第一次运行后会自动生成）
+    ├──medical_records/     #游戏记录目录（第一次运行后会自动生成）
+    ├──round_logs/          #回合日志目录（第一次运行后会自动生成）
     ├──.env                 #环境文件
     ├──main.py              #主程序
     ├──requirements.txt     #依赖包
-├──AI_doctor-patient_diagnostic_system-EN/
-    ├──doctor_memory/       #医生长期记忆目录
-    ├──medical_records/     #游戏记录目录
-    ├──round_logs/          #回合日志目录
+├──AI_doctor-patient_diagnostic_system-EN/  #英文版
+    ├──doctor_memory/       #医生长期记忆目录（第一次运行后会自动生成）
+    ├──medical_records/     #游戏记录目录（第一次运行后会自动生成）
+    ├──round_logs/          #回合日志目录（第一次运行后会自动生成）
     ├──.env                 #环境文件
     ├──main.py              #主程序
     ├──requirements.txt     #依赖包
@@ -55,21 +58,21 @@ DEEPSEEK_API_KEY=your_api_key_here
 ### 2.运行游戏
 **交互模式** (推荐):
 ```bash
-python werewolf.py
+python main.py
 # 或
-python3 werewolf.py
+python3 main.py
 ```
 
 **自动模式** (无需交互):
 ```bash
-python werewolf.py --auto
+python main.py --auto
 # 或
-python3 werewolf.py --auto
+python3 main.py --auto
 ```
 
 **指定回合数**
 ```bash
-python doc3.py --rounds 10  # 运行10个回合
+python .py --rounds 10  # 运行10个回合
 ```
 
 ## 🎮 游戏规则
@@ -165,7 +168,7 @@ python doc3.py --rounds 10  # 运行10个回合
     %% 数据流连接
     R -.->|对话历史| Q
     S -.->|怀疑值增加| P
-    V -.->|扣除部分预算| P
+    V -.->|扣除部分预算,怀疑值增加| P
     Z -.->|更新记忆| G
     AA -.->|保存日志| E
 ```
@@ -272,13 +275,13 @@ TEMPERATURE_DOCTOR_DIAGNOSIS = 0.3    # 医生诊断 - 低温度确保准确性
 ## 🧪 测试验证
 ```
 # 验证Python语法
-python3 -m py_compile doc3.py
+python3 -m py_compile main.py
 
 # 查看帮助信息
-python3 doc3.py --help
+python3 main.py --help
 
 # 运行测试游戏（3回合自动模式）
-python3 doc3.py --auto --rounds 3
+python3 main.py --auto --rounds 3
 ```
 
 ## 🔧 自定义扩展
