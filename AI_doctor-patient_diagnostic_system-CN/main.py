@@ -118,15 +118,15 @@ class MedicalConfig:
 
     # ==================== 患者个性类型 ====================
     PERSONALITY_TYPES = {
-    "谨慎型": {"suspicion_gain": 0.15, "cost_sensitivity": 0.8, "ideal_cost_range": (80, 150)},
-    "随意型": {"suspicion_gain": 0.08, "cost_sensitivity": 0.4, "ideal_cost_range": (120, 200)},
-    "疑病症": {"suspicion_gain": 0.25, "cost_sensitivity": 0.3, "ideal_cost_range": (150, 250)},
-    "节俭型": {"suspicion_gain": 0.12, "cost_sensitivity": 0.9, "ideal_cost_range": (50, 100)},
+    "谨慎型": {"suspicion_gain": 0.15, "cost_sensitivity": 0.8, "ideal_cost_range": (160, 300)},
+    "随意型": {"suspicion_gain": 0.08, "cost_sensitivity": 0.4, "ideal_cost_range": (240, 400)},
+    "疑病症": {"suspicion_gain": 0.25, "cost_sensitivity": 0.3, "ideal_cost_range": (300, 500)},
+    "节俭型": {"suspicion_gain": 0.12, "cost_sensitivity": 0.9, "ideal_cost_range": (100, 200)},
     # 新增个性类型
-    "急躁型": {"suspicion_gain": 0.20, "cost_sensitivity": 0.5, "ideal_cost_range": (100, 180)},
-    "依赖型": {"suspicion_gain": 0.05, "cost_sensitivity": 0.6, "ideal_cost_range": (200, 300)},
-    "理性型": {"suspicion_gain": 0.10, "cost_sensitivity": 0.7, "ideal_cost_range": (150, 220)},
-    "多疑型": {"suspicion_gain": 0.30, "cost_sensitivity": 0.4, "ideal_cost_range": (80, 120)}
+    "急躁型": {"suspicion_gain": 0.20, "cost_sensitivity": 0.5, "ideal_cost_range": (200, 350)},
+    "依赖型": {"suspicion_gain": 0.05, "cost_sensitivity": 0.6, "ideal_cost_range": (400, 600)},
+    "理性型": {"suspicion_gain": 0.10, "cost_sensitivity": 0.7, "ideal_cost_range": (300, 440)},
+    "多疑型": {"suspicion_gain": 0.30, "cost_sensitivity": 0.4, "ideal_cost_range": (160, 240)}
     }
 
     # ==================== 误解触发器 ====================
@@ -562,7 +562,7 @@ class MedicalSystem:
 # ==================== 状态管理 ====================
 
 class programState:
-    """游状态管理类"""
+    """状态管理类"""
 
     def __init__(self):
         self.current_round = 0
@@ -576,6 +576,7 @@ class programState:
         self.test_results = []
         self.start_time = datetime.now()
         self.patient_symptoms = []
+        self.evidence_sufficient = False
 
     def record_action(self, action_type: str, details: Dict):
         """记录行动历史"""
@@ -599,20 +600,44 @@ class programState:
         self.remaining_budget -= cost
         self.patient_suspicion += 0.15 
 
-    def is_round_over(self) -> bool:
+    def is_round_over(self, doctor_agent=None) -> bool:
         """检查回合是否结束"""
-        return (self.patient_suspicion >= MedicalConfig.SUSPICION_THRESHOLD or
-                self.remaining_budget <= 0 or
-                self.questions_asked >= MedicalConfig.MAX_QUESTIONS_PER_ROUND)
+        # 基本结束条件
+        basic_over = (self.patient_suspicion >= MedicalConfig.SUSPICION_THRESHOLD or
+                     self.remaining_budget <= 0 or
+                     self.questions_asked >= MedicalConfig.MAX_QUESTIONS_PER_ROUND)
+        
+        # 如果基本条件已满足，直接返回
+        if basic_over:
+            return True
+        
+        # 如果有医生智能体，询问是否证据充分
+        if doctor_agent and self.questions_asked >= 3:  # 至少问3个问题后才可能证据充分
+            # 更新证据充分标志
+            self.evidence_sufficient = doctor_agent.is_evidence_sufficient(
+                self.dialogue_history, 
+                self.test_results,
+                self.current_round,
+                self.patient_suspicion
+            )
+            
+            # 如果医生认为证据充分，回合结束
+            if self.evidence_sufficient:
+                print(f"🧠 医生认为证据充分，准备进行诊断")
+                return True
+        
+        return False
 
     def get_status_summary(self) -> str:
         """获取状态摘要"""
+        evidence_status = "✅证据充分" if self.evidence_sufficient else "📝采集中"
         return (f"当前回合: {self.current_round} | "
                 f"问题数: {self.questions_asked} | "
                 f"检查数: {self.tests_ordered} | "
                 f"总费用: {self.total_cost} | "
                 f"剩余预算: {self.remaining_budget} | "
-                f"患者怀疑: {self.patient_suspicion:.2f}")
+                f"患者怀疑: {self.patient_suspicion:.2f} | "
+                f"{evidence_status}")
     
     def export_to_dict(self) -> Dict:
         """导出状态为字典"""
@@ -749,13 +774,69 @@ class DoctorAgent:
         self.successful_strategies = {}
         self.memory_manager = MemoryManager()
         self.historical_experience = ""
+        self.confidence_threshold = 0.8
         
         # 加载长期记忆
         if MedicalConfig.ENABLE_LONG_TERM_MEMORY:
             self.historical_experience = self.memory_manager.load_learning_experience()
             if self.historical_experience:
                 print(f"✅ 医生加载了长期记忆经验")
+    def is_evidence_sufficient(self, dialogue_history: List, test_results: List, 
+                              current_round: int, current_suspicion: float) -> bool:
+        """判断证据是否足够进行诊断"""
+        
+        # 如果有检查结果，构造检查结果摘要
+        test_summary = ""
+        if test_results:
+            test_summary = f"【已做检查】{len(test_results)}项检查：{', '.join([r.split(':')[0] for r in test_results if ':' in r][:3])}"
+        
+        # 获取最近对话（最后4条）
+        recent_dialogue = dialogue_history[-6:] if len(dialogue_history) >= 6 else dialogue_history
+        dialogue_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent_dialogue])
+        
+        prompt = f"""作为经验丰富的医生，你需要判断当前收集的证据是否足够做出诊断。
 
+【当前问诊情况】
+- 当前回合: {current_round}
+- 患者怀疑度: {current_suspicion:.2f}
+{test_summary}
+
+【最近对话记录】
+{dialogue_text}
+
+请评估：
+1. 关键症状是否已明确？
+2. 关键鉴别检查是否已完成？
+3. 是否有足够证据排除其他可能疾病？
+4. 能否以较高置信度做出诊断？
+
+如果证据足够，请回答"是的，证据足够诊断"。
+如果还需要更多信息，请回答"不，需要更多信息"。
+
+只回答上述两个选项之一："""
+        
+        try:
+            response = self.api_client.chat(
+                system_prompt="你是经验丰富的临床医生，善于判断何时可以做出诊断",
+                user_message=prompt,
+                temperature=0.3  # 低温度确保判断稳定
+            ).strip()
+            
+            # 判断响应
+            if "是的，证据足够诊断" in response or "证据足够" in response:
+                return True
+            elif "不，需要更多信息" in response or "需要更多信息" in response:
+                return False
+            else:
+                # 如果响应不明确，根据对话长度和检查数量判断
+                has_tests = len(test_results) > 0
+                sufficient_dialogue = len(dialogue_history) >= 6
+                return (has_tests and sufficient_dialogue) or len(dialogue_history) >= 10
+                
+        except Exception as e:
+            print(f"⚠️ 证据评估API调用失败: {e}")
+            # 降级策略：基于简单规则
+            return len(dialogue_history) >= 8 or (len(test_results) >= 2 and len(dialogue_history) >= 4)
     def choose_action(self, program_state: programState, patient: PatientAgent) -> str:
         """选择行动：询问病情 或 要求检查"""
         # 基于学习历史的策略
@@ -825,30 +906,37 @@ class DoctorAgent:
             
             tests_info.append(f"{test}: {cost}元 (准确率{accuracy:.0%}) {affordability}")
         
-        # 构建提示词
+        # ==================== 在这里修改提示词 ====================
         prompt = f"""你是一位经验丰富的医生，正在为患者选择检查项目。
 
-【患者症状】
-{symptoms_text}
+    【患者症状】
+    {symptoms_text}
 
-【近期对话历史】
-{history_text}
+    【近期对话历史】
+    {history_text}
 
-【患者剩余预算】
-{program_state.remaining_budget}元
+    【患者剩余预算】
+    {program_state.remaining_budget}元
 
-【检查项目列表】
-{chr(10).join(tests_info)}
+    【检查项目列表】
+    {chr(10).join(tests_info)}
 
-【重要说明】
-1. 必须从上述检查项目中选择
-2. 必须选择在预算范围内的检查（标记为✅的项目）
-3. 优先选择与症状最相关的检查
-4. 避免重复最近已做的检查：{recent_tests if recent_tests else "无"}
-5. 考虑检查的临床价值和必要性
+    【重要说明】
+    1. 必须从上述检查项目中选择
+    2. 必须选择在预算范围内的检查（标记为✅的项目）
+    3. 优先选择与症状最相关的检查
+    4. 避免重复最近已做的检查：{recent_tests if recent_tests else "无"}
+    5. 考虑检查的临床价值和必要性
+    6. 💡 重要提醒：患者的理想预算可能比剩余预算少，请谨慎选择，若检查太多可考虑不检查
 
-请根据患者的症状选择最合适的1项检查，直接输出检查名称（仅名称）："""
+    【决策建议】
+    - 如果当前信息已经足够诊断，可以选择"血常规"作为基础检查
+    - 如果症状不典型或需要排除其他疾病，选择针对性强的检查
+    - 平衡诊断需求和费用控制
 
+    请根据患者的症状选择最合适的1项检查，直接输出检查名称（仅名称）："""
+        # ==================== 修改结束 ====================
+        
         try:
             response = self.api_client.chat(
                 system_prompt="你是一位专业的医学专家，擅长根据症状选择恰当的检查项目",
@@ -1110,6 +1198,32 @@ class MedicalDiagnosisprogram:
         print(f"\n{color}{separator}")
         print(f"{title:^60}")
         print(f"{separator}{Style.RESET_ALL}\n")
+    def _doctor_decide_continue(self, program_state, patient) -> bool:
+        """医生决定是否继续收集证据"""
+    
+    # 如果有充足预算且患者怀疑度不高，医生可能想多收集证据
+        if program_state.remaining_budget > 200 and patient.suspicion_level < 0.5:
+            prompt = f"""作为医生，你已收集到初步证据，但：
+    - 患者怀疑度较低 ({patient.suspicion_level:.2f})
+    - 还有充足预算 ({program_state.remaining_budget}元)
+
+    你是否想再问1-2个问题或做一个检查来确认诊断？
+    回答"继续问诊"或"停止问诊"："""
+            
+            try:
+                response = self.doctor.api_client.chat(
+                    system_prompt="你是谨慎的医生，会权衡证据充分性和患者感受",
+                    user_message=prompt,
+                    temperature=0.4
+                ).strip()
+                
+                return "继续问诊" in response
+            except:
+                # 默认：如果预算充足且患者不怀疑，继续
+                return program_state.remaining_budget > 150 and patient.suspicion_level < 0.4
+        else:
+            # 预算紧张或患者怀疑度高时，立即停止
+            return False
 
     def print_info(self, message: str, color: str = Fore.WHITE):
         """打印信息"""
@@ -1140,9 +1254,14 @@ class MedicalDiagnosisprogram:
         program_state.dialogue_history = patient.dialogue_history.copy()
 
         # 主循环
-        while not program_state.is_round_over():
+        while not program_state.is_round_over(self.doctor):  # 传入doctor参数
             self.print_info(f"\n{program_state.get_status_summary()}", Fore.CYAN)
-
+            
+            # 如果证据已充分但还没跳出循环，直接结束
+            if program_state.evidence_sufficient:
+                self.print_info("🧠 医生认为证据已充分，停止问诊", Fore.GREEN)
+                break
+                
             # 医生选择行动
             action = self.doctor.choose_action(program_state, patient)
             
@@ -1150,9 +1269,28 @@ class MedicalDiagnosisprogram:
                 self._handle_questioning(program_state, patient, program_state.dialogue_history)
             else:
                 self._handle_test_ordering(program_state, patient, program_state.dialogue_history, program_state.test_results)
-
-            if not self.auto_mode and not program_state.is_round_over():
-                input("按回车继续...")
+            
+            # 每次行动后，医生重新评估证据是否充分
+            if program_state.questions_asked >= 4 or program_state.tests_ordered >= 1:
+                # 医生评估
+                is_sufficient = self.doctor.is_evidence_sufficient(
+                    program_state.dialogue_history,
+                    program_state.test_results,
+                    program_state.current_round,
+                    patient.suspicion_level
+                )
+                
+                if is_sufficient and not program_state.evidence_sufficient:
+                    program_state.evidence_sufficient = True
+                    self.print_info("🧠 医生认为当前证据已足够诊断", Fore.GREEN)
+                    # 可以选择继续问诊或立即结束
+                    # 这里让医生决定是否继续
+                    continue_action = self._doctor_decide_continue(program_state, patient)
+                    if not continue_action:
+                        break
+        
+            # if not self.auto_mode and not program_state.is_round_over(self.doctor):
+            #     input("按回车继续...")
 
         # 最终诊断和评估
         round_result = self._evaluate_round(program_state, patient, case_info, program_state.dialogue_history, program_state.test_results)
@@ -1212,6 +1350,18 @@ class MedicalDiagnosisprogram:
             "role": "system", 
             "content": f"进行了{test_type}检查，结果: {test_result['result']}"
         })
+    def _get_round_end_reason(self, program_state: programState) -> str:
+        """获取回合结束原因"""
+        if program_state.patient_suspicion >= MedicalConfig.SUSPICION_THRESHOLD:
+            return "患者怀疑度过高"
+        elif program_state.remaining_budget <= 0:
+            return "预算耗尽"
+        elif program_state.questions_asked >= MedicalConfig.MAX_QUESTIONS_PER_ROUND:
+            return "问题数达到上限"
+        elif program_state.evidence_sufficient:
+            return "医生认为证据充分"
+        else:
+            return "未知原因"
 
     def _evaluate_round(self, program_state: programState, patient: PatientAgent, 
                        case_info: Dict, dialogue_history: List, test_results: List) -> Dict:
@@ -1264,7 +1414,9 @@ class MedicalDiagnosisprogram:
             "ideal_cost": case_info["ideal_cost"],
             "final_suspicion": patient.suspicion_level,
             "failure_reasons": failure_reasons,
-            "cost_ratio": cost_ratio
+            "cost_ratio": cost_ratio,
+            "evidence_sufficient": program_state.evidence_sufficient,  # 新增
+            "round_end_reason": self._get_round_end_reason(program_state)
         }
 
         # 医生学习
@@ -1339,7 +1491,7 @@ class MedicalDiagnosisprogram:
         }
         
         run_id = self.record_manager.save_program_record(program_data)
-        self.print_info(f"💾 完整记录已保存，游ID: {run_id}", Fore.GREEN)
+        self.print_info(f"💾 完整记录已保存，ID: {run_id}", Fore.GREEN)
         return run_id
 
     def _calculate_performance_summary(self) -> Dict:
