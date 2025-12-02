@@ -56,7 +56,7 @@ DEEPSEEK_API_KEY=your_api_key_here
 4. 复制API密钥并粘贴到.env文件中
 
 ### 2.运行游戏
-**交互模式** (推荐):
+**交互模式** (每轮需输入回车进到下一轮):
 ```bash
 python main.py
 # 或
