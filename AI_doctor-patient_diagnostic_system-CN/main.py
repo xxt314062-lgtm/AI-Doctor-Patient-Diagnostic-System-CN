@@ -597,7 +597,7 @@ class programState:
         self.tests_ordered += 1
         self.total_cost += cost
         self.remaining_budget -= cost
-        self.patient_suspicion += 0.05 
+        self.patient_suspicion += 0.15 
 
     def is_round_over(self) -> bool:
         """检查回合是否结束"""
@@ -797,72 +797,112 @@ class DoctorAgent:
         return question.strip()
 
     def select_test_type(self, program_state: programState, symptoms: List[str], dialogue_history: List) -> str:
-        """使用AI根据症状智能选择最合适的检查"""
+        """根据患者病情，从检查列表中选择最合适的检查"""
         
-        # 获取可用的检查列表（确保在费用字典中）
+        # 获取所有检查项目
         available_tests = list(MedicalConfig.TEST_COSTS.keys())
         
-        # 如果症状为空或预算极低，返回一个基础检查
-        if not symptoms or program_state.remaining_budget < 50:
-            return self._get_fallback_check(program_state.remaining_budget)
+        # 如果预算不足或没有症状，返回一个基础检查
+        if program_state.remaining_budget < 50 or not symptoms:
+            return self._select_basic_test(program_state.remaining_budget)
         
         # 构建症状描述
-        symptoms_text = "、".join(symptoms)
+        symptoms_text = "、".join(symptoms) if symptoms else "全身不适"
         
-        # 提取最近的对话历史（最后2-3轮）
+        # 获取近期对话
         recent_dialogue = dialogue_history[-4:] if len(dialogue_history) >= 4 else dialogue_history
         history_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent_dialogue])
+        
+        # 获取最近已做的检查
+        recent_tests = self._get_recent_tests(program_state)
+        
+        # 构建检查列表信息（包含价格和准确性）
+        tests_info = []
+        for test in available_tests:
+            cost = MedicalConfig.TEST_COSTS[test]
+            accuracy = MedicalConfig.TEST_ACCURACY.get(test, 0.7)
+            affordability = "✅" if cost <= program_state.remaining_budget else "❌"
+            
+            tests_info.append(f"{test}: {cost}元 (准确率{accuracy:.0%}) {affordability}")
         
         # 构建提示词
         prompt = f"""你是一位经验丰富的医生，正在为患者选择检查项目。
 
-    【患者症状】
-    {symptoms_text}
+【患者症状】
+{symptoms_text}
 
-    【近期对话历史】
-    {history_text}
+【近期对话历史】
+{history_text}
 
-    【可用检查项目及费用】
-    {self._format_available_tests(available_tests, program_state.remaining_budget)}
+【患者剩余预算】
+{program_state.remaining_budget}元
 
-    【选择原则】
-    1. 优先选择与症状最相关的检查
-    2. 考虑检查的准确率（准确性越高越好）
-    3. 必须在患者预算范围内（剩余预算：{program_state.remaining_budget}元）
-    4. 避免不必要的重复检查
-    5. 考虑性价比（费用与诊断价值比）
+【检查项目列表】
+{chr(10).join(tests_info)}
 
-    请从上述可用检查中选择最合适的1项检查，直接输出检查名称（仅名称，不要解释）："""
+【重要说明】
+1. 必须从上述检查项目中选择
+2. 必须选择在预算范围内的检查（标记为✅的项目）
+3. 优先选择与症状最相关的检查
+4. 避免重复最近已做的检查：{recent_tests if recent_tests else "无"}
+5. 考虑检查的临床价值和必要性
+
+请根据患者的症状选择最合适的1项检查，直接输出检查名称（仅名称）："""
 
         try:
             response = self.api_client.chat(
                 system_prompt="你是一位专业的医学专家，擅长根据症状选择恰当的检查项目",
                 user_message=prompt,
-                temperature=0.3  # 低温度确保稳定输出
+                temperature=0.4  # 中等温度平衡专业性和灵活性
             )
             
-            # 清理响应，提取检查名称
-            selected_test = self._extract_test_name(response, available_tests)
+            # 从响应中提取检查名称
+            selected_test = self._extract_test_from_response(response, available_tests, program_state.remaining_budget)
             
-            # 验证检查是否在预算范围内
-            if selected_test in MedicalConfig.TEST_COSTS:
-                cost = MedicalConfig.TEST_COSTS[selected_test]
-                if cost <= program_state.remaining_budget:
-                    return selected_test
-            
-            # 如果AI选择失败，使用后备方案
-            return self._get_fallback_check(program_state.remaining_budget)
-            
+            # 如果成功选择了有效的检查，返回它
+            if selected_test:
+                return selected_test
+            else:
+                # 如果AI选择失败，回退到基础检查
+                return self._select_basic_test(program_state.remaining_budget)
+                
         except Exception as e:
             print(f"⚠️ AI选择检查时出错: {e}")
-            return self._get_fallback_check(program_state.remaining_budget)
+            return self._select_basic_test(program_state.remaining_budget)
+    
+    def _extract_test_from_response(self, response: str, available_tests: List[str], budget: int) -> str:
+        """从AI响应中提取检查名称"""
+        # 清理响应
+        response = response.strip()
         
-    def _get_fallback_check(self, budget: int) -> str:
-        """获取后备检查（当AI选择失败时使用）"""
-        # 按性价比排序：准确性/价格比
+        # 尝试直接匹配
+        for test in available_tests:
+            # 检查名称是否出现在响应中
+            if test in response:
+                # 验证预算
+                if MedicalConfig.TEST_COSTS[test] <= budget:
+                    return test
+        
+        # 如果直接匹配失败，尝试部分匹配
+        for test in available_tests:
+            test_words = test.replace("检查", "").replace("测试", "").replace("检测", "").strip()
+            if test_words in response:
+                if MedicalConfig.TEST_COSTS[test] <= budget:
+                    return test
+        
+        # 检查是否有类似"血常规检查"、"心电图检查"这样的完整名称
+        for test in available_tests:
+            if f"{test}检查" in response or f"{test}测试" in response or f"{test}检测" in response:
+                if MedicalConfig.TEST_COSTS[test] <= budget:
+                    return test
+        
+        return ""
+    
+    def _select_basic_test(self, budget: int) -> str:
+        """选择基础检查（当AI选择失败时使用）"""
+        # 获取预算内的检查
         affordable_tests = [
-            (test, cost, MedicalConfig.TEST_ACCURACY.get(test, 0.7))
-            for test, cost in MedicalConfig.TEST_COSTS.items()
+            test for test, cost in MedicalConfig.TEST_COSTS.items()
             if cost <= budget
         ]
         
@@ -871,48 +911,27 @@ class DoctorAgent:
             cheapest = min(MedicalConfig.TEST_COSTS.items(), key=lambda x: x[1])
             return cheapest[0]
         
-        # 按性价比排序（准确性/价格）
-        affordable_tests.sort(key=lambda x: x[2] / x[1], reverse=True)
-        return affordable_tests[0][0]
+        # 按价格排序，选择中等价格的检查（避免总是选择最便宜的）
+        affordable_tests.sort(key=lambda x: MedicalConfig.TEST_COSTS[x])
         
-    def _extract_test_name(self, response: str, available_tests: List[str]) -> str:
-        """从AI响应中提取检查名称"""
-        # 清理响应
-        response = response.strip()
+        # 选择价格在中间位置的检查（增加多样性）
+        if len(affordable_tests) >= 3:
+            return affordable_tests[len(affordable_tests) // 2]  # 中间位置
+        else:
+            return affordable_tests[0]  # 第一个
+    
+    def _get_recent_tests(self, program_state: programState) -> List[str]:
+        """获取最近已做的检查"""
+        recent_tests = []
         
-        # 直接匹配
-        for test in available_tests:
-            if test in response:
-                return test
+        # 从行动历史中查找最近的检查
+        for action in reversed(program_state.actions_history[-10:]):  # 查看最近10个行动
+            if action.get("type") == "检查":
+                test_type = action.get("details", {}).get("test_type")
+                if test_type and test_type not in recent_tests:
+                    recent_tests.append(test_type)
         
-        # 尝试移除标点和多余文字
-        clean_response = re.sub(r'[。，；、！？]', '', response)
-        clean_response = clean_response.split('检查')[0] if '检查' in clean_response else clean_response
-        
-        for test in available_tests:
-            if test in clean_response:
-                return test
-        
-        # 模糊匹配（部分匹配）
-        for test in available_tests:
-            test_simple = test.replace('检查', '').replace('测试', '').strip()
-            if test_simple in response or test_simple in clean_response:
-                return test
-        
-        # 默认返回空
-        return ""
-        
-    def _format_available_tests(self, tests: List[str], budget: int) -> str:
-        """格式化可用检查信息"""
-        formatted = []
-        for test in tests:
-            cost = MedicalConfig.TEST_COSTS[test]
-            accuracy = MedicalConfig.TEST_ACCURACY.get(test, 0.7)
-            if cost <= budget:
-                formatted.append(f"- {test}: {cost}元 (准确率: {accuracy:.0%})")
-            else:
-                formatted.append(f"- {test}: {cost}元 (准确率: {accuracy:.0%}) [超出预算]")
-        return "\n".join(formatted)
+        return recent_tests[-3:]  # 返回最近3个检查
 
     def make_diagnosis(self, full_dialogue: List, test_results: List) -> str:
         """做出最终诊断"""
@@ -941,53 +960,6 @@ class DoctorAgent:
             temperature=MedicalConfig.TEMPERATURE_DOCTOR_DIAGNOSIS
         )
         return diagnosis
-
-
-    def get_fallback_test(self, budget: int, symptoms: List[str]) -> str:
-        """根据预算和症状获取后备检查项目"""
-    
-    # 可用检查列表（按预算筛选）
-        affordable_tests = [
-            test for test, cost in MedicalConfig.TEST_COSTS.items()
-            if cost <= budget
-        ]
-    
-        if not affordable_tests:
-            # 如果预算不够任何检查，返回最便宜的
-            cheapest = min(MedicalConfig.TEST_COSTS.items(), key=lambda x: x[1])
-            return cheapest[0]
-    
-    # 症状相关的通用检查优先级
-        symptom_priority_tests = {
-            # 神经系统症状相关
-            "头痛": ["血压测量", "血常规", "脑电图"],
-            "头晕": ["血压测量", "血常规", "心电图"],
-            # 呼吸系统症状相关
-            "咳嗽": ["血常规", "X光胸片"],
-            "发热": ["血常规", "C反应蛋白"],
-            # 消化系统症状相关
-            "腹痛": ["血常规", "B超", "尿常规"],
-            "恶心": ["血常规", "肝功能"],
-            # 全身症状相关
-            "乏力": ["血常规", "甲状腺功能", "血糖检测"],
-        }
-    
-    # 根据症状选择后备检查
-        for symptom in symptoms:
-            if symptom in symptom_priority_tests:
-                for test in symptom_priority_tests[symptom]:
-                    if test in affordable_tests:
-                        return test
-    
-    # 通用的基础检查优先级
-        general_priority = ["血常规", "尿常规", "血糖检测", "心电图", "血压测量"]
-        
-        for test in general_priority:
-            if test in affordable_tests:
-                return test
-        
-        # 最后选择最便宜的可用检查
-        return min(affordable_tests, key=lambda x: MedicalConfig.TEST_COSTS[x])
     
     def learn_from_round(self, round_result: Dict, run_id: str):
         """从本轮学习并更新长期记忆"""
