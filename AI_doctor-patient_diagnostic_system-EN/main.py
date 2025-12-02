@@ -597,7 +597,7 @@ class ProgramState:
         self.tests_ordered += 1
         self.total_cost += cost
         self.remaining_budget -= cost
-        self.patient_suspicion += 0.05  
+        self.patient_suspicion += 0.15  
 
     def is_round_over(self) -> bool:
         """Check if round is over"""
@@ -740,7 +740,7 @@ Please describe your symptoms in natural, conversational language:
 
 
 class DoctorAgent:
-    """Doctor Agent"""
+    """Doctor Intelligent Agent"""
 
     def __init__(self, api_client: DeepSeekClient):
         self.api_client = api_client
@@ -757,23 +757,23 @@ class DoctorAgent:
                 print(f"✅ Doctor loaded long-term memory experience")
 
     def choose_action(self, program_state: ProgramState, patient: PatientAgent) -> str:
-        """Choose action: ask about condition or request test"""
+        """Choose action: inquire about condition or request test"""
         # Strategy based on learning history
         suspicion = patient.suspicion_level
         budget_ratio = program_state.remaining_budget / MedicalConfig.INITIAL_BUDGET
         
-        # Simple strategy: based on suspicion value and budget
+        # Simple strategy: decide based on suspicion and budget
         if (suspicion > 0.6 and budget_ratio > 0.3) or suspicion > 0.8:
-            return "request test"
+            return "Request test"
         else:
-            return "ask about condition"
+            return "Inquire about condition"
 
     def generate_question(self, dialogue_history: List) -> str:
-        """Generate diagnostic question"""
+        """Generate diagnostic questions"""
         history_text = "\n".join([
             f"{msg['role']}: {msg['content']}" 
-            for msg in dialogue_history[-4:]  # Last 2 rounds of dialogue
-        ]) if dialogue_history else "No dialogue history yet"
+            for msg in dialogue_history[-4:]  # Last 2 rounds
+        ]) if dialogue_history else "No dialogue history"
 
         prompt = f"""You are an experienced doctor diagnosing a patient.
 
@@ -782,137 +782,156 @@ class DoctorAgent:
 
 {self.historical_experience if self.historical_experience else ''}
 
-Please ask one question that will be most helpful for diagnosis:
-- Base on existing information for reasoning
-- Question should be precise and targeted
+Please ask ONE question that is most helpful for diagnosis:
+- Base your question on existing information
+- Be precise and targeted
 - Ask only one question at a time
 
-Output question:"""
+Output the question:"""
 
         question = self.api_client.chat(
-            system_prompt="You are a professional doctor skilled at diagnosing through consultation",
+            system_prompt="You are a professional doctor skilled at diagnosis through inquiry",
             user_message=prompt,
             temperature=MedicalConfig.TEMPERATURE_DOCTOR_QUESTION
         )
         return question.strip()
 
     def select_test_type(self, program_state: ProgramState, symptoms: List[str], dialogue_history: List) -> str:
-        """Use AI to intelligently select most appropriate test based on symptoms"""
+        """Select the most appropriate test from the test list based on patient condition"""
         
-        # Get available test list (ensure in cost dictionary)
+        # Get all available tests
         available_tests = list(MedicalConfig.TEST_COSTS.keys())
         
-        # If symptoms empty or budget very low, return a basic test
-        if not symptoms or program_state.remaining_budget < 50:
-            return self._get_fallback_check(program_state.remaining_budget)
+        # Return basic test if insufficient budget or no symptoms
+        if program_state.remaining_budget < 50 or not symptoms:
+            return self._select_basic_test(program_state.remaining_budget)
         
         # Build symptom description
-        symptoms_text = ", ".join(symptoms)
+        symptoms_text = "、".join(symptoms) if symptoms else "General discomfort"
         
-        # Extract recent dialogue history (last 2-3 rounds)
+        # Get recent dialogue
         recent_dialogue = dialogue_history[-4:] if len(dialogue_history) >= 4 else dialogue_history
         history_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in recent_dialogue])
         
+        # Get recently performed tests
+        recent_tests = self._get_recent_tests(program_state)
+        
+        # Build test list information (including cost and accuracy)
+        tests_info = []
+        for test in available_tests:
+            cost = MedicalConfig.TEST_COSTS[test]
+            accuracy = MedicalConfig.TEST_ACCURACY.get(test, 0.7)
+            affordability = "✅" if cost <= program_state.remaining_budget else "❌"
+            
+            tests_info.append(f"{test}: ¥{cost} (Accuracy {accuracy:.0%}) {affordability}")
+        
         # Build prompt
-        prompt = f"""You are an experienced doctor selecting tests for a patient.
+        prompt = f"""You are an experienced doctor selecting test items for a patient.
 
-    【Patient Symptoms】
-    {symptoms_text}
+【Patient Symptoms】
+{symptoms_text}
 
-    【Recent Dialogue History】
-    {history_text}
+【Recent Dialogue History】
+{history_text}
 
-    【Available Test Items and Costs】
-    {self._format_available_tests(available_tests, program_state.remaining_budget)}
+【Remaining Patient Budget】
+¥{program_state.remaining_budget}
 
-    【Selection Principles】
-    1. Prioritize tests most relevant to symptoms
-    2. Consider test accuracy (higher accuracy is better)
-    3. Must be within patient's budget (remaining budget: {program_state.remaining_budget} yuan)
-    4. Avoid unnecessary duplicate tests
-    5. Consider cost-effectiveness (cost to diagnostic value ratio)
+【Available Test Items】
+{chr(10).join(tests_info)}
 
-    Please select the most appropriate 1 test item from the available tests above, output only the test name (name only, no explanation):"""
+【Important Notes】
+1. Must select from the above test items
+2. Must select tests within budget (marked with ✅)
+3. Prioritize tests most relevant to symptoms
+4. Avoid recently performed tests: {recent_tests if recent_tests else 'None'}
+5. Consider clinical value and necessity
+
+Please select the most appropriate SINGLE test based on patient symptoms. Output only the test name:"""
 
         try:
             response = self.api_client.chat(
                 system_prompt="You are a professional medical expert skilled at selecting appropriate tests based on symptoms",
                 user_message=prompt,
-                temperature=0.3  # Low temperature ensures stable output
+                temperature=0.4  # Medium temperature for balance
             )
             
-            # Clean response, extract test name
-            selected_test = self._extract_test_name(response, available_tests)
+            # Extract test name from response
+            selected_test = self._extract_test_from_response(response, available_tests, program_state.remaining_budget)
             
-            # Verify test is within budget
-            if selected_test in MedicalConfig.TEST_COSTS:
-                cost = MedicalConfig.TEST_COSTS[selected_test]
-                if cost <= program_state.remaining_budget:
-                    return selected_test
-            
-            # If AI selection fails, use fallback
-            return self._get_fallback_check(program_state.remaining_budget)
-            
+            # Return if valid test selected
+            if selected_test:
+                return selected_test
+            else:
+                # Fallback to basic test if AI selection fails
+                return self._select_basic_test(program_state.remaining_budget)
+                
         except Exception as e:
-            print(f"⚠️ AI test selection error: {e}")
-            return self._get_fallback_check(program_state.remaining_budget)
-        
-    def _get_fallback_check(self, budget: int) -> str:
-        """Get fallback test (when AI selection fails)"""
-        # Sort by cost-effectiveness: accuracy/price ratio
-        affordable_tests = [
-            (test, cost, MedicalConfig.TEST_ACCURACY.get(test, 0.7))
-            for test, cost in MedicalConfig.TEST_COSTS.items()
-            if cost <= budget
-        ]
-        
-        if not affordable_tests:
-            # If budget insufficient for any test, return cheapest
-            cheapest = min(MedicalConfig.TEST_COSTS.items(), key=lambda x: x[1])
-            return cheapest[0]
-        
-        # Sort by cost-effectiveness (accuracy/price)
-        affordable_tests.sort(key=lambda x: x[2] / x[1], reverse=True)
-        return affordable_tests[0][0]
-        
-    def _extract_test_name(self, response: str, available_tests: List[str]) -> str:
+            print(f"⚠️ Error selecting test via AI: {e}")
+            return self._select_basic_test(program_state.remaining_budget)
+    
+    def _extract_test_from_response(self, response: str, available_tests: List[str], budget: int) -> str:
         """Extract test name from AI response"""
         # Clean response
         response = response.strip()
         
-        # Direct match
+        # Try direct matching
         for test in available_tests:
+            # Check if name appears in response
             if test in response:
-                return test
+                # Validate budget
+                if MedicalConfig.TEST_COSTS[test] <= budget:
+                    return test
         
-        # Try removing punctuation and extra text
-        clean_response = re.sub(r'[。，；、！？]', '', response)
-        clean_response = clean_response.split('Test')[0] if 'Test' in clean_response else clean_response
-        
+        # Try partial matching if direct fails
         for test in available_tests:
-            if test in clean_response:
-                return test
+            test_words = test.replace("Test", "").replace("Exam", "").replace("Scan", "").strip()
+            if test_words in response:
+                if MedicalConfig.TEST_COSTS[test] <= budget:
+                    return test
         
-        # Fuzzy match (partial match)
+        # Check for full names like "Blood Test", "ECG Test"
         for test in available_tests:
-            test_simple = test.replace('Test', '').replace('test', '').strip()
-            if test_simple in response or test_simple in clean_response:
-                return test
+            if f"{test} Test" in response or f"{test} Exam" in response or f"{test} Scan" in response:
+                if MedicalConfig.TEST_COSTS[test] <= budget:
+                    return test
         
-        # Default return empty
         return ""
+    
+    def _select_basic_test(self, budget: int) -> str:
+        """Select basic test (used when AI selection fails)"""
+        # Get affordable tests
+        affordable_tests = [
+            test for test, cost in MedicalConfig.TEST_COSTS.items()
+            if cost <= budget
+        ]
         
-    def _format_available_tests(self, tests: List[str], budget: int) -> str:
-        """Format available test information"""
-        formatted = []
-        for test in tests:
-            cost = MedicalConfig.TEST_COSTS[test]
-            accuracy = MedicalConfig.TEST_ACCURACY.get(test, 0.7)
-            if cost <= budget:
-                formatted.append(f"- {test}: {cost} yuan (accuracy: {accuracy:.0%})")
-            else:
-                formatted.append(f"- {test}: {cost} yuan (accuracy: {accuracy:.0%}) [over budget]")
-        return "\n".join(formatted)
+        if not affordable_tests:
+            # Return cheapest if no test affordable
+            cheapest = min(MedicalConfig.TEST_COSTS.items(), key=lambda x: x[1])
+            return cheapest[0]
+        
+        # Sort by price, select mid-priced test (avoid always cheapest)
+        affordable_tests.sort(key=lambda x: MedicalConfig.TEST_COSTS[x])
+        
+        # Select middle-priced test (increase diversity)
+        if len(affordable_tests) >= 3:
+            return affordable_tests[len(affordable_tests) // 2]  # Middle position
+        else:
+            return affordable_tests[0]  # First
+    
+    def _get_recent_tests(self, program_state: ProgramState) -> List[str]:
+        """Get recently performed tests"""
+        recent_tests = []
+        
+        # Find recent tests from action history
+        for action in reversed(program_state.actions_history[-10:]):  # Check last 10 actions
+            if action.get("type") == "Test":
+                test_type = action.get("details", {}).get("test_type")
+                if test_type and test_type not in recent_tests:
+                    recent_tests.append(test_type)
+        
+        return recent_tests[-3:]  # Return last 3 tests
 
     def make_diagnosis(self, full_dialogue: List, test_results: List) -> str:
         """Make final diagnosis"""
@@ -923,77 +942,30 @@ Output question:"""
         
         test_text = "\n".join(test_results) if test_results else "No test results"
 
-        prompt = f"""Based on the following doctor-patient dialogue and test results, please make a diagnosis:
+        prompt = f"""Based on the following doctor-patient dialogue and test results, please provide a diagnosis:
 
-        【Dialogue Record】
-        {dialogue_text}
+【Dialogue Record】
+{dialogue_text}
 
-        【Test Results】
-        {test_text}
+【Test Results】
+{test_text}
 
-        {self.historical_experience if self.historical_experience else ''}
+{self.historical_experience if self.historical_experience else ''}
 
-        Please output the most likely disease diagnosis:"""
+Please output the most likely disease diagnosis:"""
 
         diagnosis = self.api_client.chat(
-            system_prompt="You are a professional medical diagnosis expert",
+            system_prompt="You are a professional medical diagnostic expert",
             user_message=prompt,
             temperature=MedicalConfig.TEMPERATURE_DOCTOR_DIAGNOSIS
         )
         return diagnosis
-
-
-    def get_fallback_test(self, budget: int, symptoms: List[str]) -> str:
-        """Get fallback test based on budget and symptoms"""
-    
-    # Available test list (filtered by budget)
-        affordable_tests = [
-            test for test, cost in MedicalConfig.TEST_COSTS.items()
-            if cost <= budget
-        ]
-    
-        if not affordable_tests:
-            # If budget insufficient for any test, return cheapest
-            cheapest = min(MedicalConfig.TEST_COSTS.items(), key=lambda x: x[1])
-            return cheapest[0]
-    
-    # Symptom-related general test priority
-        symptom_priority_tests = {
-            # Neurological symptoms related
-            "headache": ["Blood Pressure Measurement", "Blood Test", "EEG"],
-            "dizziness": ["Blood Pressure Measurement", "Blood Test", "ECG"],
-            # Respiratory symptoms related
-            "cough": ["Blood Test", "Chest X-ray"],
-            "fever": ["Blood Test", "C-reactive Protein"],
-            # Digestive symptoms related
-            "abdominal pain": ["Blood Test", "Ultrasound", "Urine Test"],
-            "nausea": ["Blood Test", "Liver Function Test"],
-            # Systemic symptoms related
-            "fatigue": ["Blood Test", "Thyroid Function Test", "Blood Glucose Test"],
-        }
-    
-    # Select fallback test based on symptoms
-        for symptom in symptoms:
-            if symptom in symptom_priority_tests:
-                for test in symptom_priority_tests[symptom]:
-                    if test in affordable_tests:
-                        return test
-    
-    # General basic test priority
-        general_priority = ["Blood Test", "Urine Test", "Blood Glucose Test", "ECG", "Blood Pressure Measurement"]
-        
-        for test in general_priority:
-            if test in affordable_tests:
-                return test
-        
-        # Finally select cheapest available test
-        return min(affordable_tests, key=lambda x: MedicalConfig.TEST_COSTS[x])
     
     def learn_from_round(self, round_result: Dict, run_id: str):
-        """Learn from this round and update long-term memory"""
+        """Learn from current round and update long-term memory"""
         self.learning_history.append(round_result)
         
-        # Extract key learning points
+        # Extract key learnings
         key_learning = self._extract_key_learning(round_result)
         
         # Update strategy
@@ -1018,14 +990,14 @@ Output question:"""
             self.memory_manager.save_learning_experience(learning_experience, run_id)
     
     def _extract_key_learning(self, round_result: Dict) -> str:
-        """Extract key learning points from round result"""
+        """Extract key learnings from round result"""
         if round_result["success"]:
             if round_result["questions_asked"] <= 3:
-                return "Few precise questions can lead to diagnosis"
+                return "Few precise questions suffice for diagnosis"
             elif round_result["tests_ordered"] > 0:
-                return "Reasonable use of tests improves diagnostic accuracy"
+                return "Rational test use improves diagnostic accuracy"
             else:
-                return "Pure consultation can also successfully diagnose"
+                return "Pure inquiry can also succeed"
         else:
             if round_result["final_suspicion"] >= MedicalConfig.SUSPICION_THRESHOLD:
                 return "Patient trust management needs improvement"
